@@ -14,7 +14,7 @@ namespace Certbot
         {
             builder.Services.AddHttpClient();
 
-            builder.Services.AddSingleton(new LookupClient { UseCache = false });
+            builder.Services.AddSingleton(new LookupClient { UseCache = false, EnableAuditTrail = true });
 
             builder.Services.AddSingleton(provider =>
                 new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(new AzureServiceTokenProvider().KeyVaultTokenCallback)));
