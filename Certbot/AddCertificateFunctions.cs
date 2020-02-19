@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
+using ACMESharp.Protocol;
 using Certbot.Models;
 using DnsClient;
 using DnsClient.Protocol;
@@ -23,16 +24,18 @@ namespace Certbot
         private readonly LookupClient _lookupClient;
         private readonly KeyVaultClient _keyVaultClient;
         private readonly IAzure _azure;
+        private readonly AcmeProtocolClient _acmeProtocolClient;
 
         private string _applicationGatewayIp;
 
-        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure)
+        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure, AcmeProtocolClient acmeProtocolClient)
         {
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _lookupClient = lookupClient;
             _keyVaultClient = keyVaultClient;
             _azure = azure;
+            _acmeProtocolClient = acmeProtocolClient;
         }
 
         [FunctionName("AddCertificateFunctions_HttpStart")]
@@ -72,6 +75,8 @@ namespace Certbot
                 var isDnsResolving = await context.CallActivityAsync<bool>("AddCertificateFunctions_CheckDnsResolution", domain);
 
                 if (!isDnsResolving) throw new Exception($"Domain name {domain} is not resolving to Application Gateway.");
+
+                await context.CallActivityAsync<bool>("AddCertificateFunctions_GetAcmeChallengeAsync", domain);
             }
         }
 
@@ -93,6 +98,22 @@ namespace Certbot
             var ip = result.Answers.OfType<ARecord>().FirstOrDefault()?.Address.ToString();
 
             return ip == _applicationGatewayIp;
+        }
+
+        /// <summary>
+        /// We ask the CA what we need to do in order to prove that we control the domain. The CA will look at the domain name being requested
+        /// and issue one or more sets of challenges. These are different ways that the agent can prove control of the domain. We'll use the http_01 challenge.
+        /// </summary>
+        /// <param name="domain"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName("AddCertificateFunctions_GetAcmeChallengeAsync")]
+        public async Task GetAcmeChallengeAsync([ActivityTrigger] string domain, ILogger log)
+        {
+            log.LogInformation($"Getting ACME challenges for {domain}");
+
+            var x = await _acmeProtocolClient.CreateOrderAsync(new[] { domain });
+
         }
     }
 }

@@ -1,4 +1,4 @@
-using Certbot.Models;
+﻿using Certbot.Models;
 using DnsClient;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Azure.KeyVault;
@@ -53,6 +53,9 @@ namespace Certbot
                 .WithSubscription(config.SubscriptionId);
 
             builder.Services.AddSingleton(azure);
+
+            var acmeProtocolClient = await new AcmeProtocolClientFactory(config).CreateClientAsync();
+            builder.Services.AddSingleton(acmeProtocolClient);
         }
     }
 }
