@@ -1,7 +1,13 @@
 {
-    "IsEncrypted": false,
-    "Values": {
-        "AzureWebJobsStorage": "",
-        "FUNCTIONS_WORKER_RUNTIME": "dotnet"
-    }
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "",
+    "AcmeEndpoint": "https://acme-v02.api.letsencrypt.org/",
+    "AcmeAccountEmail": "",
+    "TenantId": "",
+    "SubscriptionId": "",
+    "ApplicationGatewayResourceGroup": "",
+    "ApplicationGatewayName": "",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet"
+  }
 }

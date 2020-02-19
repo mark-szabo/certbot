@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
+using Certbot.Models;
 using DnsClient;
 using DnsClient.Protocol;
 using Microsoft.Azure.KeyVault;
@@ -18,15 +19,17 @@ namespace Certbot
     public class AddCertificateFunctions
     {
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly CertbotConfiguration _configuration;
         private readonly LookupClient _lookupClient;
         private readonly KeyVaultClient _keyVaultClient;
         private readonly IAzure _azure;
 
         private string _applicationGatewayIp;
 
-        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure)
+        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure)
         {
             _httpClientFactory = httpClientFactory;
+            _configuration = configuration;
             _lookupClient = lookupClient;
             _keyVaultClient = keyVaultClient;
             _azure = azure;
@@ -58,7 +61,7 @@ namespace Certbot
         {
             var domains = context.GetInput<string[]>();
 
-            var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync("rg_loyalty_prod_weu", "appgw_loyalty_prod_weu");
+            var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync(_configuration.ApplicationGatewayResourceGroup, _configuration.ApplicationGatewayName);
             var publicIpResourceId = applicationGateway.PublicFrontends.FirstOrDefault().Value?.Inner.PublicIPAddress.Id;
             if (publicIpResourceId == null) throw new Exception();
             var publicIp = await _azure.PublicIPAddresses.GetByIdAsync(publicIpResourceId);
@@ -75,7 +78,7 @@ namespace Certbot
         /// <summary>
         /// Check whether the domain resolves to the IP of the Application Gateway.
         /// </summary>
-        /// <param name="name"></param>
+        /// <param name="domain"></param>
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName("AddCertificateFunctions_CheckDnsResolution")]
