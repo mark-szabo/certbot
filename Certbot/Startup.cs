@@ -26,7 +26,7 @@ namespace Certbot
 
         public IConfiguration Configuration { get; }
 
-        public override async System.Threading.Tasks.Task ConfigureAsync(IFunctionsHostBuilder builder)
+        public override void Configure(IFunctionsHostBuilder builder)
         {
             builder.Services.Configure<CertbotConfiguration>(Configuration);
             var config = Configuration.Get<CertbotConfiguration>();
@@ -46,15 +46,15 @@ namespace Certbot
                 .Configure()
                 .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
                 .Authenticate(new AzureCredentials(
-                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://management.azure.com/").Result),
-                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://graph.windows.net/").Result),
+                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://management.azure.com/", config.TenantId).Result),
+                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://graph.windows.net/", config.TenantId).Result),
                     config.TenantId,
                     AzureEnvironment.AzureGlobalCloud))
                 .WithSubscription(config.SubscriptionId);
 
             builder.Services.AddSingleton(azure);
 
-            var acmeProtocolClient = await new AcmeProtocolClientFactory(config).CreateClientAsync();
+            var acmeProtocolClient = new AcmeProtocolClientFactory(config).CreateClientAsync().Result;
             builder.Services.AddSingleton(acmeProtocolClient);
         }
     }
