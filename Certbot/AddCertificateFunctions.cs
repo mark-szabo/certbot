@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using DnsClient;
 using DnsClient.Protocol;
 using Microsoft.Azure.KeyVault;
+using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
@@ -19,14 +20,16 @@ namespace Certbot
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly LookupClient _lookupClient;
         private readonly KeyVaultClient _keyVaultClient;
+        private readonly IAzure _azure;
 
         private string _applicationGatewayIp;
 
-        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, LookupClient lookupClient, KeyVaultClient keyVaultClient)
+        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure)
         {
             _httpClientFactory = httpClientFactory;
             _lookupClient = lookupClient;
             _keyVaultClient = keyVaultClient;
+            _azure = azure;
         }
 
         [FunctionName("AddCertificateFunctions_HttpStart")]
@@ -55,7 +58,11 @@ namespace Certbot
         {
             var domains = context.GetInput<string[]>();
 
-            // TODO: get App Gateway IP here
+            var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync("rg_loyalty_prod_weu", "appgw_loyalty_prod_weu");
+            var publicIpResourceId = applicationGateway.PublicFrontends.FirstOrDefault().Value?.Inner.PublicIPAddress.Id;
+            if (publicIpResourceId == null) throw new Exception();
+            var publicIp = await _azure.PublicIPAddresses.GetByIdAsync(publicIpResourceId);
+            _applicationGatewayIp = publicIp.Inner.IpAddress;
 
             foreach (var domain in domains)
             {
@@ -82,10 +89,7 @@ namespace Certbot
             var result = await _lookupClient.QueryAsync(cnames[0].CanonicalName, QueryType.A);
             var ip = result.Answers.OfType<ARecord>().FirstOrDefault()?.Address.ToString();
 
-            // TODO: compare IP with AppGW's IP. They should match.
-            //return ip == _applicationGatewayIp;
-
-            return true;
+            return ip == _applicationGatewayIp;
         }
     }
 }
