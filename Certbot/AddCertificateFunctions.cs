@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
+using ACMESharp.Authorizations;
 using ACMESharp.Protocol;
 using Certbot.Models;
 using DnsClient;
@@ -25,8 +27,6 @@ namespace Certbot
         private readonly KeyVaultClient _keyVaultClient;
         private readonly IAzure _azure;
         private readonly AcmeProtocolClient _acmeProtocolClient;
-
-        private string _applicationGatewayIp;
 
         public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure, AcmeProtocolClient acmeProtocolClient)
         {
@@ -64,20 +64,35 @@ namespace Certbot
         {
             var domains = context.GetInput<string[]>();
 
+            var applicationGatewayIp = await context.CallActivityAsync<string>("AddCertificateFunctions_GetApplicationGatewayPublicIp", null);
+
+            foreach (var domain in domains)
+            {
+                var isDnsResolving = await context.CallActivityAsync<bool>("AddCertificateFunctions_CheckDnsResolution", (domain, applicationGatewayIp));
+
+                // TODO: enable this after app migration to Azure
+                // if (!isDnsResolving) throw new Exception($"Domain name {domain} is not resolving to Application Gateway.");
+
+                var challanges = context.CallActivityAsync<List<Http01ChallengeValidationDetails>>("AddCertificateFunctions_GetAcmeChallengesAsync", domain);
+            }
+        }
+
+        /// <summary>
+        /// Get the publis IP address of the Application Gateway from the Azure Management API.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName("AddCertificateFunctions_GetApplicationGatewayPublicIp")]
+        public async Task<string> GetApplicationGatewayPublicIpAsync([ActivityTrigger] object input, ILogger log)
+        {
+            log.LogInformation("Getting Application Gateway public IP address.");
+
             var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync(_configuration.ApplicationGatewayResourceGroup, _configuration.ApplicationGatewayName);
             var publicIpResourceId = applicationGateway.PublicFrontends.FirstOrDefault().Value?.Inner.PublicIPAddress.Id;
             if (publicIpResourceId == null) throw new Exception();
             var publicIp = await _azure.PublicIPAddresses.GetByIdAsync(publicIpResourceId);
-            _applicationGatewayIp = publicIp.Inner.IpAddress;
 
-            foreach (var domain in domains)
-            {
-                var isDnsResolving = await context.CallActivityAsync<bool>("AddCertificateFunctions_CheckDnsResolution", domain);
-
-                if (!isDnsResolving) throw new Exception($"Domain name {domain} is not resolving to Application Gateway.");
-
-                await context.CallActivityAsync<bool>("AddCertificateFunctions_GetAcmeChallengeAsync", domain);
-            }
+            return publicIp.Inner.IpAddress;
         }
 
         /// <summary>
@@ -87,8 +102,10 @@ namespace Certbot
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName("AddCertificateFunctions_CheckDnsResolution")]
-        public async Task<bool> CheckDnsResolutionAsync([ActivityTrigger] string domain, ILogger log)
+        public async Task<bool> CheckDnsResolutionAsync([ActivityTrigger] (string, string) input, ILogger log)
         {
+            var (domain, applicationGatewayIp) = input;
+
             log.LogInformation($"Checking domain resolution for {domain}");
 
             var cnameResult = await _lookupClient.QueryAsync(domain, QueryType.CNAME);
@@ -97,7 +114,7 @@ namespace Certbot
             var result = await _lookupClient.QueryAsync(cnames[0].CanonicalName, QueryType.A);
             var ip = result.Answers.OfType<ARecord>().FirstOrDefault()?.Address.ToString();
 
-            return ip == _applicationGatewayIp;
+            return ip == applicationGatewayIp;
         }
 
         /// <summary>
@@ -107,13 +124,27 @@ namespace Certbot
         /// <param name="domain"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_GetAcmeChallengeAsync")]
-        public async Task GetAcmeChallengeAsync([ActivityTrigger] string domain, ILogger log)
+        [FunctionName("AddCertificateFunctions_GetAcmeChallengesAsync")]
+        public async Task<List<Http01ChallengeValidationDetails>> GetAcmeChallengesAsync([ActivityTrigger] string domain, ILogger log)
         {
             log.LogInformation($"Getting ACME challenges for {domain}");
 
-            var x = await _acmeProtocolClient.CreateOrderAsync(new[] { domain });
+            var order = await _acmeProtocolClient.CreateOrderAsync(new[] { domain });
 
+            var challanges = new List<Http01ChallengeValidationDetails>();
+            foreach (var authorization in order.Payload.Authorizations)
+            {
+                var authz = await _acmeProtocolClient.GetAuthorizationDetailsAsync(authorization);
+
+                var challange = AuthorizationDecoder.ResolveChallengeForHttp01(
+                    authz,
+                    authz.Challenges.First(x => x.Type == "http-01"),
+                    _acmeProtocolClient.Signer);
+
+                challanges.Add(challange);
+            }
+
+            return challanges;
         }
     }
 }
