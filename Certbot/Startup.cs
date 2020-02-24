@@ -1,8 +1,10 @@
-﻿using Certbot.Models;
+﻿using Azure.Identity;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using Certbot.Models;
 using DnsClient;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Azure.KeyVault;
-using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
@@ -10,6 +12,7 @@ using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Rest;
+using System;
 
 [assembly: FunctionsStartup(typeof(Certbot.Startup))]
 
@@ -42,7 +45,7 @@ namespace Certbot
             builder.Services.AddSingleton(provider =>
                 new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(tokenProvider.KeyVaultTokenCallback)));
 
-            var azure = Azure
+            var azure = Microsoft.Azure.Management.Fluent.Azure
                 .Configure()
                 .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
                 .Authenticate(new AzureCredentials(
@@ -53,6 +56,14 @@ namespace Certbot
                 .WithSubscription(config.SubscriptionId);
 
             builder.Services.AddSingleton(azure);
+
+            // Get a credential and create a client object for the blob container.
+            BlobContainerClient blobContainerClient = new BlobContainerClient(new Uri(config.BlobContainerUrl), new DefaultAzureCredential(new DefaultAzureCredentialOptions { SharedTokenCacheUsername = "mark-ms@antavo.com" }));
+
+            // Create the container if it does not exist.
+            blobContainerClient.CreateIfNotExistsAsync(PublicAccessType.Blob).Wait();
+
+            builder.Services.AddSingleton(blobContainerClient);
 
             var acmeProtocolClient = new AcmeProtocolClientFactory(config).CreateClientAsync().Result;
             builder.Services.AddSingleton(acmeProtocolClient);
