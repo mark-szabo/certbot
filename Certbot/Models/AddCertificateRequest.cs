@@ -2,6 +2,6 @@
 {
     internal class AddCertificateRequest
     {
-        public string[] Domains { get; set; }
+        public string[] Hostnames { get; set; }
     }
 }

@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using ACMESharp.Authorizations;
@@ -14,6 +15,7 @@ using Certbot.Models;
 using DnsClient;
 using DnsClient.Protocol;
 using Microsoft.Azure.KeyVault;
+using Microsoft.Azure.KeyVault.Models;
 using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
@@ -32,6 +34,8 @@ namespace Certbot
         private readonly IAzure _azure;
         private readonly BlobContainerClient _blobContainerClient;
         private readonly AcmeProtocolClient _acmeProtocolClient;
+
+        private static ReadOnlySpan<byte> X509Separator => new byte[] { 0x0A, 0x0A };
 
         public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure, BlobContainerClient blobContainerClient, IAcmeProtocolClientFactory acmeProtocolClientFactory)
         {
@@ -52,13 +56,13 @@ namespace Certbot
         {
             var request = JsonConvert.DeserializeObject<AddCertificateRequest>(await req.Content.ReadAsStringAsync());
 
-            if (request?.Domains == null || request.Domains.Length == 0)
+            if (request?.Hostnames == null || request.Hostnames.Length == 0)
             {
-                return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{nameof(request.Domains)} is empty.");
+                return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{nameof(request.Hostnames)} is empty.");
             }
 
             // Function input comes from the request content.
-            string instanceId = await starter.StartNewAsync("AddCertificateFunctions", request.Domains);
+            string instanceId = await starter.StartNewAsync("AddCertificateFunctions", request.Hostnames);
 
             log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
 
@@ -68,18 +72,18 @@ namespace Certbot
         [FunctionName("AddCertificateFunctions")]
         public async Task RunOrchestrator([OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            var domains = context.GetInput<string[]>();
+            var hostnames = context.GetInput<string[]>();
 
             var applicationGatewayIp = await context.CallActivityAsync<string>(nameof(GetApplicationGatewayPublicIpAsync), null);
 
-            foreach (var domain in domains)
+            foreach (var hostname in hostnames)
             {
-                var isDnsResolving = await context.CallActivityAsync<bool>(nameof(CheckDnsResolutionAsync), (domain, applicationGatewayIp));
+                var isDnsResolving = await context.CallActivityAsync<bool>(nameof(CheckDnsResolutionAsync), (hostname, applicationGatewayIp));
 
                 // TODO: enable this after app migration to Azure
-                // if (!isDnsResolving) throw new InvalidOperationException($"Domain name {domain} is not resolving to Application Gateway.");
+                // if (!isDnsResolving) throw new InvalidOperationException($"Hostname {hostname} is not resolving to Application Gateway.");
 
-                var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), domain);
+                var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), hostname);
 
                 foreach (var authorization in order.Payload.Authorizations)
                 {
@@ -96,6 +100,8 @@ namespace Certbot
                 }
 
                 await context.CallActivityAsync(nameof(CheckAcmeOrderAsync), order);
+
+                await context.CallActivityAsync(nameof(CreateCertificateAsync), (hostname, order));
             }
         }
 
@@ -118,19 +124,19 @@ namespace Certbot
         }
 
         /// <summary>
-        /// Check whether the domain resolves to the IP of the Application Gateway.
+        /// Check whether the hostname resolves to the IP of the Application Gateway.
         /// </summary>
-        /// <param name="domain"></param>
+        /// <param name="input"></param>
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(CheckDnsResolutionAsync))]
         public async Task<bool> CheckDnsResolutionAsync([ActivityTrigger] (string, string) input, ILogger log)
         {
-            var (domain, applicationGatewayIp) = input;
+            var (hostname, applicationGatewayIp) = input;
 
-            log.LogInformation($"Checking domain resolution for {domain}");
+            log.LogInformation($"Checking hostname resolution for {hostname}");
 
-            var cnameResult = await _lookupClient.QueryAsync(domain, QueryType.CNAME);
+            var cnameResult = await _lookupClient.QueryAsync(hostname, QueryType.CNAME);
             var cnames = cnameResult.Answers.OfType<CNameRecord>().ToList();
 
             if (cnames.Count == 0) return false;
@@ -148,22 +154,22 @@ namespace Certbot
         /// certificate, the authorizations that the server requires the client
         /// to complete, and any certificates that have resulted from this order.
         /// </summary>
-        /// <param name="domain"></param>
+        /// <param name="hostname"></param>
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(GetAcmeOrderAsync))]
-        public async Task<OrderDetails> GetAcmeOrderAsync([ActivityTrigger] string domain, ILogger log)
+        public async Task<OrderDetails> GetAcmeOrderAsync([ActivityTrigger] string hostname, ILogger log)
         {
-            log.LogInformation($"Getting ACME order for {domain}");
+            log.LogInformation($"Getting ACME order for {hostname}");
 
-            var order = await _acmeProtocolClient.CreateOrderAsync(new[] { domain });
+            var order = await _acmeProtocolClient.CreateOrderAsync(new[] { hostname });
 
             return order;
         }
 
         /// <summary>
-        /// We ask the CA what we need to do in order to prove that we control the domain. The CA will look at the domain name being requested
-        /// and issue one or more sets of challenges. These are different ways that the agent can prove control of the domain. We'll use the http_01 challenge.
+        /// We ask the CA what we need to do in order to prove that we control the hostname. The CA will look at the hostname name being requested
+        /// and issue one or more sets of challenges. These are different ways that the agent can prove control of the hostname. We'll use the http_01 challenge.
         /// </summary>
         /// <param name="authorization"></param>
         /// <param name="log"></param>
@@ -217,7 +223,7 @@ namespace Certbot
         }
 
         /// <summary>
-        /// Cheeck the ACME order if our cert is ready.
+        /// Check the ACME order at the CA, maybe our cert is ready.
         /// </summary>
         /// <param name="order"></param>
         /// <param name="log"></param>
@@ -232,7 +238,7 @@ namespace Certbot
             if (refreshedOrder.Payload.Status == "pending")
             {
                 // order is pending, wait
-                throw new RetriableActivityException("ACME domain validation is pending.");
+                throw new RetriableActivityException("ACME hostname validation is pending.");
             }
 
             if (refreshedOrder.Payload.Status == "invalid")
@@ -240,6 +246,90 @@ namespace Certbot
                 // order is invalid
                 throw new InvalidOperationException("Invalid order status.");
             }
+        }
+
+        /// <summary>
+        /// Create certificate in KeyVault, sign with the CA.
+        /// </summary>
+        /// <param name="input"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(CreateCertificateAsync))]
+        public async Task CreateCertificateAsync([ActivityTrigger] (string, OrderDetails) input, ILogger log)
+        {
+            var (hostname, order) = input;
+            log.LogInformation($"Creating certificate for {hostname}");
+
+            var certificateName = hostname.Replace("*", "wildcard").Replace(".", "-");
+
+            byte[] csr;
+
+            /*var subject = "CN=" + hostname;
+            var subjectAlternativeNames = new SubjectAlternativeNames();
+            subjectAlternativeNames.DnsNames.Add(hostname);
+            var request = await _certificateClient.StartCreateCertificateAsync(
+                certificateName,
+                new CertificatePolicy("Unknown", subject, subjectAlternativeNames),
+                tags: new Dictionary<string, string>
+                {
+                    { "Issuer", new Uri(order.Payload.Finalize).Host }
+                });
+
+            csr = request.Properties.Csr;*/
+
+            try
+            {
+                var request = await _keyVaultClient.CreateCertificateAsync(
+                    _configuration.KeyVaultBaseUrl,
+                    certificateName,
+                    new CertificatePolicy
+                    {
+                        X509CertificateProperties = new X509CertificateProperties
+                        {
+                            SubjectAlternativeNames = new SubjectAlternativeNames(dnsNames: new List<string> { hostname })
+                        }
+                    },
+                    tags: new Dictionary<string, string>
+                    {
+                        { "Issuer", new Uri(order.Payload.Finalize).Host }
+                    });
+
+                csr = request.Csr;
+            }
+            catch (KeyVaultErrorException ex) when (ex.Response.StatusCode == HttpStatusCode.Conflict)
+            {
+                var base64Csr = await _keyVaultClient.GetPendingCertificateSigningRequestAsync(_configuration.KeyVaultBaseUrl, certificateName);
+
+                csr = Convert.FromBase64String(base64Csr);
+            }
+
+            var finalize = await _acmeProtocolClient.FinalizeOrderAsync(order.Payload.Finalize, csr);
+
+            var httpClient = _httpClientFactory.CreateClient();
+            var certificateData = await httpClient.GetByteArrayAsync(finalize.Payload.Certificate);
+
+            // We can switch to the new library when this bug is fixed: https://github.com/Azure/azure-sdk-for-net/issues/9986
+            //await _certificateClient.MergeCertificateAsync(new MergeCertificateOptions(certificateName, SliceCert(certificateData)));
+
+            var x509Certificates = new X509Certificate2Collection();
+
+            x509Certificates.ImportFromPem(certificateData);
+
+            await _keyVaultClient.MergeCertificateAsync(_configuration.KeyVaultBaseUrl, certificateName, x509Certificates);
+        }
+
+        private static IEnumerable<byte[]> SliceCert(byte[] rawData)
+        {
+            var collection = new List<byte[]>();
+
+            var rawDataSpan = rawData.AsSpan();
+
+            var separator = rawDataSpan.IndexOf(X509Separator);
+
+            collection.Add(rawDataSpan.Slice(0, separator).ToArray());
+            collection.Add(rawDataSpan.Slice(separator + 2).ToArray());
+
+            return collection;
         }
     }
 }

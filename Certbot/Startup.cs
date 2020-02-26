@@ -1,4 +1,5 @@
 ﻿using Azure.Identity;
+using Azure.Security.KeyVault.Certificates;
 using Azure.Security.KeyVault.Secrets;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -48,6 +49,9 @@ namespace Certbot
 
             var secretClient = new SecretClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
             builder.Services.AddSingleton(secretClient);
+
+            var certificateClient = new CertificateClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
+            builder.Services.AddSingleton(certificateClient);
 
             var azure = Microsoft.Azure.Management.Fluent.Azure
                 .Configure()
