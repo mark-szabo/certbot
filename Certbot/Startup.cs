@@ -1,4 +1,4 @@
-using Azure.Identity;
+﻿using Azure.Identity;
 using Azure.Security.KeyVault.Secrets;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -69,8 +69,7 @@ namespace Certbot
 
             builder.Services.AddSingleton(blobContainerClient);
 
-            var acmeProtocolClient = new AcmeProtocolClientFactory(config).CreateClientAsync().Result;
-            builder.Services.AddSingleton(acmeProtocolClient);
+            builder.Services.AddSingleton<IAcmeProtocolClientFactory, AcmeProtocolClientFactory>();
         }
     }
 }
