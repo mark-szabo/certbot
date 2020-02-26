@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using ACMESharp.Authorizations;
 using ACMESharp.Protocol;
+using ACMESharp.Protocol.Resources;
 using Azure.Storage.Blobs;
 using Certbot.Models;
 using DnsClient;
@@ -32,7 +33,7 @@ namespace Certbot
         private readonly BlobContainerClient _blobContainerClient;
         private readonly AcmeProtocolClient _acmeProtocolClient;
 
-        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure, BlobContainerClient blobContainerClient, AcmeProtocolClient acmeProtocolClient)
+        public AddCertificateFunctions(IHttpClientFactory httpClientFactory, CertbotConfiguration configuration, LookupClient lookupClient, KeyVaultClient keyVaultClient, IAzure azure, BlobContainerClient blobContainerClient, IAcmeProtocolClientFactory acmeProtocolClientFactory)
         {
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
@@ -40,7 +41,7 @@ namespace Certbot
             _keyVaultClient = keyVaultClient;
             _azure = azure;
             _blobContainerClient = blobContainerClient;
-            _acmeProtocolClient = acmeProtocolClient;
+            _acmeProtocolClient = acmeProtocolClientFactory.CreateClientAsync().Result;
         }
 
         [FunctionName("AddCertificateFunctions_HttpStart")]
@@ -76,23 +77,25 @@ namespace Certbot
                 var isDnsResolving = await context.CallActivityAsync<bool>(nameof(CheckDnsResolutionAsync), (domain, applicationGatewayIp));
 
                 // TODO: enable this after app migration to Azure
-                // if (!isDnsResolving) throw new Exception($"Domain name {domain} is not resolving to Application Gateway.");
+                // if (!isDnsResolving) throw new InvalidOperationException($"Domain name {domain} is not resolving to Application Gateway.");
 
                 var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), domain);
 
                 foreach (var authorization in order.Payload.Authorizations)
                 {
-                    var challenge = await context.CallActivityAsync<Http01ChallengeValidationDetails>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
+                    var (challenge, validationDetails) = await context.CallActivityAsync<(Challenge, Http01ChallengeValidationDetails)>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
 
-                    await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), challenge);
+                    await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), validationDetails);
 
-                    var response = await context.CallHttpAsync(HttpMethod.Get, new Uri(challenge.HttpResourceUrl));
+                    var response = await context.CallHttpAsync(HttpMethod.Get, new Uri(validationDetails.HttpResourceUrl));
 
-                    if (response.StatusCode != HttpStatusCode.OK) throw new Exception($"ACME challenge http_01 validation file could not be found at {challenge.HttpResourceUrl}.");
-                    if (response.Content != challenge.HttpResourceValue) throw new Exception($"ACME challenge http_01 validation file content is not valid at {challenge.HttpResourceUrl}.");
+                    if (response.StatusCode != HttpStatusCode.OK) throw new InvalidOperationException($"ACME challenge http_01 validation file could not be found at {validationDetails.HttpResourceUrl}.");
+                    if (response.Content != validationDetails.HttpResourceValue) throw new InvalidOperationException($"ACME challenge http_01 validation file content is not valid at {validationDetails.HttpResourceUrl}.");
 
                     await context.CallActivityAsync(nameof(AnswerAcmeHttp01ChallengeAsync), challenge);
                 }
+
+                await context.CallActivityAsync(nameof(CheckAcmeOrderAsync), order);
             }
         }
 
@@ -166,18 +169,19 @@ namespace Certbot
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(GetAcmeHttp01ChallengeAsync))]
-        public async Task<Http01ChallengeValidationDetails> GetAcmeHttp01ChallengeAsync([ActivityTrigger] string authorization, ILogger log)
+        public async Task<(Challenge, Http01ChallengeValidationDetails)> GetAcmeHttp01ChallengeAsync([ActivityTrigger] string authorization, ILogger log)
         {
             log.LogInformation($"Getting ACME http_01 challenge for {authorization}");
 
             var authz = await _acmeProtocolClient.GetAuthorizationDetailsAsync(authorization);
 
-            var challange = AuthorizationDecoder.ResolveChallengeForHttp01(
+            var challenge = authz.Challenges.First(x => x.Type == "http-01");
+            var validationDetails = AuthorizationDecoder.ResolveChallengeForHttp01(
                 authz,
-                authz.Challenges.First(x => x.Type == "http-01"),
+                challenge,
                 _acmeProtocolClient.Signer);
 
-            return challange;
+            return (challenge, validationDetails);
         }
 
         /// <summary>
@@ -204,12 +208,38 @@ namespace Certbot
         /// <param name="challenge"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName(nameof(GetAcmeHttp01ChallengeAsync))]
-        public async Task AnswerAcmeHttp01ChallengeAsync([ActivityTrigger] Http01ChallengeValidationDetails challenge, ILogger log)
+        [FunctionName(nameof(AnswerAcmeHttp01ChallengeAsync))]
+        public async Task AnswerAcmeHttp01ChallengeAsync([ActivityTrigger] Challenge challenge, ILogger log)
         {
-            log.LogInformation($"Answering ACME http_01 challenge for {challenge.HttpResourceUrl}");
+            log.LogInformation($"Answering ACME http_01 challenge for {challenge.Url}");
 
-            await _acmeProtocolClient.AnswerChallengeAsync(challenge.HttpResourceUrl);
+            await _acmeProtocolClient.AnswerChallengeAsync(challenge.Url);
+        }
+
+        /// <summary>
+        /// Cheeck the ACME order if our cert is ready.
+        /// </summary>
+        /// <param name="order"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(CheckAcmeOrderAsync))]
+        public async Task CheckAcmeOrderAsync([ActivityTrigger] OrderDetails order, ILogger log)
+        {
+            log.LogInformation($"Checking ACME order {order.OrderUrl}");
+
+            var refreshedOrder = await _acmeProtocolClient.GetOrderDetailsAsync(order.OrderUrl, order);
+
+            if (refreshedOrder.Payload.Status == "pending")
+            {
+                // order is pending, wait
+                throw new RetriableActivityException("ACME domain validation is pending.");
+            }
+
+            if (refreshedOrder.Payload.Status == "invalid")
+            {
+                // order is invalid
+                throw new InvalidOperationException("Invalid order status.");
+            }
         }
     }
 }
