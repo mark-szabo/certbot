@@ -1,4 +1,5 @@
-﻿using Azure.Identity;
+using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Certbot.Models;
@@ -35,8 +36,8 @@ namespace Certbot
             var config = Configuration.Get<CertbotConfiguration>();
             builder.Services.AddSingleton(config);
 
-
             AzureServiceTokenProvider tokenProvider = new AzureServiceTokenProvider();
+            var managedServiceIdentityCredential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { SharedTokenCacheUsername = "mark-ms@antavo.com" });
 
             builder.Services.AddHttpClient();
 
@@ -44,6 +45,9 @@ namespace Certbot
 
             builder.Services.AddSingleton(provider =>
                 new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(tokenProvider.KeyVaultTokenCallback)));
+
+            var secretClient = new SecretClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
+            builder.Services.AddSingleton(secretClient);
 
             var azure = Microsoft.Azure.Management.Fluent.Azure
                 .Configure()
@@ -58,7 +62,7 @@ namespace Certbot
             builder.Services.AddSingleton(azure);
 
             // Get a credential and create a client object for the blob container.
-            BlobContainerClient blobContainerClient = new BlobContainerClient(new Uri(config.BlobContainerUrl), new DefaultAzureCredential(new DefaultAzureCredentialOptions { SharedTokenCacheUsername = "mark-ms@antavo.com" }));
+            var blobContainerClient = new BlobContainerClient(new Uri(config.BlobContainerUrl), managedServiceIdentityCredential);
 
             // Create the container if it does not exist.
             blobContainerClient.CreateIfNotExistsAsync(PublicAccessType.Blob).Wait();
