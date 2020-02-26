@@ -69,22 +69,29 @@ namespace Certbot
         {
             var domains = context.GetInput<string[]>();
 
-            var applicationGatewayIp = await context.CallActivityAsync<string>("AddCertificateFunctions_GetApplicationGatewayPublicIp", null);
+            var applicationGatewayIp = await context.CallActivityAsync<string>(nameof(GetApplicationGatewayPublicIpAsync), null);
 
             foreach (var domain in domains)
             {
-                var isDnsResolving = await context.CallActivityAsync<bool>("AddCertificateFunctions_CheckDnsResolution", (domain, applicationGatewayIp));
+                var isDnsResolving = await context.CallActivityAsync<bool>(nameof(CheckDnsResolutionAsync), (domain, applicationGatewayIp));
 
                 // TODO: enable this after app migration to Azure
                 // if (!isDnsResolving) throw new Exception($"Domain name {domain} is not resolving to Application Gateway.");
 
-                var order = await context.CallActivityAsync<OrderDetails>("AddCertificateFunctions_GetAcmeOrderAsync", domain);
+                var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), domain);
 
                 foreach (var authorization in order.Payload.Authorizations)
                 {
-                    var challange = await context.CallActivityAsync<Http01ChallengeValidationDetails>("AddCertificateFunctions_GetAcmeHttp01ChallengeAsync", authorization);
+                    var challenge = await context.CallActivityAsync<Http01ChallengeValidationDetails>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
 
-                    await context.CallActivityAsync("AddCertificateFunctions_UploadValidationFileToBlobStorageAsync", challange);
+                    await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), challenge);
+
+                    var response = await context.CallHttpAsync(HttpMethod.Get, new Uri(challenge.HttpResourceUrl));
+
+                    if (response.StatusCode != HttpStatusCode.OK) throw new Exception($"ACME challenge http_01 validation file could not be found at {challenge.HttpResourceUrl}.");
+                    if (response.Content != challenge.HttpResourceValue) throw new Exception($"ACME challenge http_01 validation file content is not valid at {challenge.HttpResourceUrl}.");
+
+                    await context.CallActivityAsync(nameof(AnswerAcmeHttp01ChallengeAsync), challenge);
                 }
             }
         }
@@ -94,7 +101,7 @@ namespace Certbot
         /// </summary>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_GetApplicationGatewayPublicIp")]
+        [FunctionName(nameof(GetApplicationGatewayPublicIpAsync))]
         public async Task<string> GetApplicationGatewayPublicIpAsync([ActivityTrigger] object input, ILogger log)
         {
             log.LogInformation("Getting Application Gateway public IP address.");
@@ -113,7 +120,7 @@ namespace Certbot
         /// <param name="domain"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_CheckDnsResolution")]
+        [FunctionName(nameof(CheckDnsResolutionAsync))]
         public async Task<bool> CheckDnsResolutionAsync([ActivityTrigger] (string, string) input, ILogger log)
         {
             var (domain, applicationGatewayIp) = input;
@@ -122,6 +129,8 @@ namespace Certbot
 
             var cnameResult = await _lookupClient.QueryAsync(domain, QueryType.CNAME);
             var cnames = cnameResult.Answers.OfType<CNameRecord>().ToList();
+
+            if (cnames.Count == 0) return false;
 
             var result = await _lookupClient.QueryAsync(cnames[0].CanonicalName, QueryType.A);
             var ip = result.Answers.OfType<ARecord>().FirstOrDefault()?.Address.ToString();
@@ -139,7 +148,7 @@ namespace Certbot
         /// <param name="domain"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_GetAcmeOrderAsync")]
+        [FunctionName(nameof(GetAcmeOrderAsync))]
         public async Task<OrderDetails> GetAcmeOrderAsync([ActivityTrigger] string domain, ILogger log)
         {
             log.LogInformation($"Getting ACME order for {domain}");
@@ -156,7 +165,7 @@ namespace Certbot
         /// <param name="authorization"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_GetAcmeHttp01ChallengeAsync")]
+        [FunctionName(nameof(GetAcmeHttp01ChallengeAsync))]
         public async Task<Http01ChallengeValidationDetails> GetAcmeHttp01ChallengeAsync([ActivityTrigger] string authorization, ILogger log)
         {
             log.LogInformation($"Getting ACME http_01 challenge for {authorization}");
@@ -177,7 +186,7 @@ namespace Certbot
         /// <param name="challenge"></param>
         /// <param name="log"></param>
         /// <returns></returns>
-        [FunctionName("AddCertificateFunctions_UploadValidationFileToBlobStorageAsync")]
+        [FunctionName(nameof(UploadValidationFileToBlobStorageAsync))]
         public async Task UploadValidationFileToBlobStorageAsync([ActivityTrigger] Http01ChallengeValidationDetails challenge, ILogger log)
         {
             log.LogInformation($"Uploading ACME validation file to {challenge.HttpResourceUrl}");
@@ -187,6 +196,20 @@ namespace Certbot
 
             await _blobContainerClient.DeleteBlobIfExistsAsync(challenge.HttpResourcePath);
             await _blobContainerClient.UploadBlobAsync(challenge.HttpResourcePath, stream);
+        }
+
+        /// <summary>
+        /// Let the CA know that we have uploaded the validation file to the correct place.
+        /// </summary>
+        /// <param name="challenge"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(GetAcmeHttp01ChallengeAsync))]
+        public async Task AnswerAcmeHttp01ChallengeAsync([ActivityTrigger] Http01ChallengeValidationDetails challenge, ILogger log)
+        {
+            log.LogInformation($"Answering ACME http_01 challenge for {challenge.HttpResourceUrl}");
+
+            await _acmeProtocolClient.AnswerChallengeAsync(challenge.HttpResourceUrl);
         }
     }
 }
