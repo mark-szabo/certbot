@@ -85,9 +85,11 @@ namespace Certbot
 
                 var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), hostname);
 
+                var validationBlobs = new List<string>();
                 foreach (var authorization in order.Payload.Authorizations)
                 {
                     var (challenge, validationDetails) = await context.CallActivityAsync<(Challenge, Http01ChallengeValidationDetails)>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
+                    validationBlobs.Add(validationDetails.HttpResourceUrl);
 
                     await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), validationDetails);
 
@@ -102,6 +104,11 @@ namespace Certbot
                 await context.CallActivityAsync(nameof(CheckAcmeOrderAsync), order);
 
                 await context.CallActivityAsync(nameof(CreateCertificateAsync), (hostname, order));
+
+                foreach (var validationBlob in validationBlobs)
+                {
+                    await context.CallActivityAsync(nameof(DeleteValidationFileFromBlobStorageAsync), validationBlob);
+                }
             }
         }
 
@@ -193,19 +200,19 @@ namespace Certbot
         /// <summary>
         /// Upload the http-01 ACME challange validation file to Azure Blob Storage.
         /// </summary>
-        /// <param name="challenge"></param>
+        /// <param name="validationDetails"></param>
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(UploadValidationFileToBlobStorageAsync))]
-        public async Task UploadValidationFileToBlobStorageAsync([ActivityTrigger] Http01ChallengeValidationDetails challenge, ILogger log)
+        public async Task UploadValidationFileToBlobStorageAsync([ActivityTrigger] Http01ChallengeValidationDetails validationDetails, ILogger log)
         {
-            log.LogInformation($"Uploading ACME validation file to {challenge.HttpResourceUrl}");
+            log.LogInformation($"Uploading ACME validation file to {validationDetails.HttpResourceUrl}");
 
-            var byteArray = Encoding.ASCII.GetBytes(challenge.HttpResourceValue);
+            var byteArray = Encoding.ASCII.GetBytes(validationDetails.HttpResourceValue);
             using var stream = new MemoryStream(byteArray);
 
-            await _blobContainerClient.DeleteBlobIfExistsAsync(challenge.HttpResourcePath);
-            await _blobContainerClient.UploadBlobAsync(challenge.HttpResourcePath, stream);
+            await _blobContainerClient.DeleteBlobIfExistsAsync(validationDetails.HttpResourcePath);
+            await _blobContainerClient.UploadBlobAsync(validationDetails.HttpResourcePath, stream);
         }
 
         /// <summary>
@@ -272,7 +279,7 @@ namespace Certbot
                 new CertificatePolicy("Unknown", subject, subjectAlternativeNames),
                 tags: new Dictionary<string, string>
                 {
-                    { "Issuer", new Uri(order.Payload.Finalize).Host }
+                    { "Issuer", new Uri(_configuration.AcmeEndpoint).Host }
                 });
 
             csr = request.Properties.Csr;*/
@@ -291,7 +298,7 @@ namespace Certbot
                     },
                     tags: new Dictionary<string, string>
                     {
-                        { "Issuer", new Uri(order.Payload.Finalize).Host }
+                        { "Issuer", new Uri(_configuration.AcmeEndpoint).Host }
                     });
 
                 csr = request.Csr;
@@ -316,6 +323,20 @@ namespace Certbot
             x509Certificates.ImportFromPem(certificateData);
 
             await _keyVaultClient.MergeCertificateAsync(_configuration.KeyVaultBaseUrl, certificateName, x509Certificates);
+        }
+
+        /// <summary>
+        /// Delete the http-01 ACME challange validation file from Azure Blob Storage.
+        /// </summary>
+        /// <param name="validationBlob"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(DeleteValidationFileFromBlobStorageAsync))]
+        public async Task DeleteValidationFileFromBlobStorageAsync([ActivityTrigger] string validationBlob, ILogger log)
+        {
+            log.LogInformation($"Deleting ACME validation file from {validationBlob}");
+
+            await _blobContainerClient.DeleteBlobAsync(validationBlob);
         }
 
         private static IEnumerable<byte[]> SliceCert(byte[] rawData)
