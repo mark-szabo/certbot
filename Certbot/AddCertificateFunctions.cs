@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -101,14 +101,18 @@ namespace Certbot
                     await context.CallActivityAsync(nameof(AnswerAcmeHttp01ChallengeAsync), challenge);
                 }
 
-                await context.CallActivityAsync(nameof(CheckAcmeOrderAsync), order);
+                var retryOptions = new RetryOptions(firstRetryInterval: TimeSpan.FromSeconds(5), maxNumberOfAttempts: 12) { Handle = RetryStrategy.RetriableException };
+                await context.CallActivityWithRetryAsync(nameof(CheckAcmeOrderAsync), retryOptions, order);
 
                 await context.CallActivityAsync(nameof(CreateCertificateAsync), (hostname, order));
 
+                // Parallel execution
+                var tasks = new List<Task>();
                 foreach (var validationBlob in validationBlobs)
                 {
-                    await context.CallActivityAsync(nameof(DeleteValidationFileFromBlobStorageAsync), validationBlob);
+                    tasks.Add(context.CallActivityAsync(nameof(DeleteValidationFileFromBlobStorageAsync), validationBlob));
                 }
+                await Task.WhenAll(tasks);
             }
         }
 
