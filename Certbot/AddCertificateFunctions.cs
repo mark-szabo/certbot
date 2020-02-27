@@ -89,7 +89,7 @@ namespace Certbot
                 foreach (var authorization in order.Payload.Authorizations)
                 {
                     var (challenge, validationDetails) = await context.CallActivityAsync<(Challenge, Http01ChallengeValidationDetails)>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
-                    validationBlobs.Add(validationDetails.HttpResourceUrl);
+                    validationBlobs.Add(validationDetails.HttpResourcePath);
 
                     await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), validationDetails);
 

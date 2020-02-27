@@ -15,4 +15,4 @@
 - Enable managed service identity for the Azure Function.
 - Assign the role `Contributor` and `Storage Blob Data Contributor` to the Storage Account.
 - Assign the role `TBD` to the Application Gateway.
-- Assign the following permissions to the Key Vault: `TBD`
+- Assign the following permissions to the Key Vault: `secret/get`, `secret/set`, `certificate/get`, `certificate/create`, `certificate/update`
