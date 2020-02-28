@@ -12,6 +12,8 @@ namespace Certbot.Models
         public string SubscriptionId { get; set; }
         public string ApplicationGatewayResourceGroup { get; set; }
         public string ApplicationGatewayName { get; set; }
+        public string ApplicationGatewayHttpSettingsName { get; set; }
+        public string ApplicationGatewayBackendName { get; set; }
         public string BlobContainerUrl { get; set; }
         public string KeyVaultBaseUrl { get; set; }
     }

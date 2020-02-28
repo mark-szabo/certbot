@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using ACMESharp.Authorizations;
 using ACMESharp.Protocol;
@@ -104,7 +106,7 @@ namespace Certbot
                 var retryOptions = new RetryOptions(firstRetryInterval: TimeSpan.FromSeconds(5), maxNumberOfAttempts: 12) { Handle = RetryStrategy.RetriableException };
                 await context.CallActivityWithRetryAsync(nameof(CheckAcmeOrderAsync), retryOptions, order);
 
-                await context.CallActivityAsync(nameof(CreateCertificateAsync), (hostname, order));
+                var certificateSecretId = await context.CallActivityAsync<string>(nameof(CreateCertificateAsync), (hostname, order));
 
                 // Parallel execution
                 var tasks = new List<Task>();
@@ -113,6 +115,8 @@ namespace Certbot
                     tasks.Add(context.CallActivityAsync(nameof(DeleteValidationFileFromBlobStorageAsync), validationBlob));
                 }
                 await Task.WhenAll(tasks);
+
+                await context.CallActivityAsync(nameof(ConfigureApplicationGatewayAsync), (hostname, certificateSecretId));
             }
         }
 
@@ -128,7 +132,7 @@ namespace Certbot
 
             var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync(_configuration.ApplicationGatewayResourceGroup, _configuration.ApplicationGatewayName);
             var publicIpResourceId = applicationGateway.PublicFrontends.FirstOrDefault().Value?.Inner.PublicIPAddress.Id;
-            if (publicIpResourceId == null) throw new Exception();
+            if (publicIpResourceId == null) throw new InvalidOperationException("Application Gatway must have a public IP.");
             var publicIp = await _azure.PublicIPAddresses.GetByIdAsync(publicIpResourceId);
 
             return publicIp.Inner.IpAddress;
@@ -266,7 +270,7 @@ namespace Certbot
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(CreateCertificateAsync))]
-        public async Task CreateCertificateAsync([ActivityTrigger] (string, OrderDetails) input, ILogger log)
+        public async Task<string> CreateCertificateAsync([ActivityTrigger] (string, OrderDetails) input, ILogger log)
         {
             var (hostname, order) = input;
             log.LogInformation($"Creating certificate for {hostname}");
@@ -326,7 +330,9 @@ namespace Certbot
 
             x509Certificates.ImportFromPem(certificateData);
 
-            await _keyVaultClient.MergeCertificateAsync(_configuration.KeyVaultBaseUrl, certificateName, x509Certificates);
+            var cert = await _keyVaultClient.MergeCertificateAsync(_configuration.KeyVaultBaseUrl, certificateName, x509Certificates);
+
+            return cert.SecretIdentifier.Identifier;
         }
 
         /// <summary>
@@ -341,6 +347,43 @@ namespace Certbot
             log.LogInformation($"Deleting ACME validation file from {validationBlob}");
 
             await _blobContainerClient.DeleteBlobAsync(validationBlob);
+        }
+
+        /// <summary>
+        /// Configure Application Gateway with the new certificate.
+        /// </summary>
+        /// <param name="input"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(ConfigureApplicationGatewayAsync))]
+        public async Task ConfigureApplicationGatewayAsync([ActivityTrigger] (string, string) input, ILogger log)
+        {
+            var (hostname, certificateSecretId) = input;
+            log.LogInformation($"Configuring Application Gateway for {hostname}");
+
+            var listenerName = hostname.Replace("*", "wildcard").Replace(".", "-") + "-listener";
+            var ruleName = hostname.Replace("*", "wildcard").Replace(".", "-") + "-rule";
+            certificateSecretId = Regex.Match(certificateSecretId, @".*\/").Value;
+
+            var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync(_configuration.ApplicationGatewayResourceGroup, _configuration.ApplicationGatewayName);
+
+            if (!applicationGateway.Listeners.ContainsKey(listenerName))
+            {
+                await applicationGateway.Update()
+                    .DefineListener(listenerName)
+                    .WithPublicFrontend()
+                    .WithFrontendPort(443)
+                    .WithHostName(hostname)
+                    .WithHttps()
+                    .WithSslCertificateFromKeyVaultSecretId(certificateSecretId)
+                    .Attach()
+                    .DefineRequestRoutingRule(ruleName)
+                    .FromListener(listenerName)
+                    .ToBackendHttpConfiguration(_configuration.ApplicationGatewayHttpSettingsName)
+                    .ToBackend(_configuration.ApplicationGatewayBackendName)
+                    .Attach()
+                    .ApplyAsync();
+            }
         }
 
         private static IEnumerable<byte[]> SliceCert(byte[] rawData)

@@ -8,6 +8,8 @@
     "SubscriptionId": "",
     "ApplicationGatewayResourceGroup": "",
     "ApplicationGatewayName": "",
+    "ApplicationGatewayHttpSettingsName": "",
+    "ApplicationGatewayBackendName": "",
     "BlobContainerUrl": "",
     "KeyVaultBaseUrl": "",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet"
