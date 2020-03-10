@@ -76,39 +76,119 @@ namespace Certbot
         {
             var hostnames = context.GetInput<string[]>();
 
+            context.SetCustomStatus(new CertbotStatus
+            {
+                Status = "GetApplicationGatewayPublicIpStep",
+                Message = "Getting Application Gateway public IP address.",
+                Error = null,
+            });
             var applicationGatewayIp = await context.CallActivityAsync<string>(nameof(GetApplicationGatewayPublicIpAsync), null);
 
             foreach (var hostname in hostnames)
             {
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "CheckDnsResolutionStep",
+                    Message = $"Checking whether {hostname} is resolving to the Application Gateway.",
+                    Error = null,
+                });
                 var isDnsResolving = await context.CallActivityAsync<bool>(nameof(CheckDnsResolutionAsync), (hostname, applicationGatewayIp));
 
-                // TODO: enable this after app migration to Azure
-                // if (!isDnsResolving) throw new InvalidOperationException($"Hostname {hostname} is not resolving to Application Gateway.");
+                if (!isDnsResolving)
+                {
+                    context.SetCustomStatus(new CertbotStatus
+                    {
+                        Status = "Failed",
+                        Message = $"Hostname {hostname} is not resolving to the Application Gateway.",
+                        Error = "HostnameNotResolvingToApplicationGateway",
+                    });
+                    throw new InvalidOperationException($"Hostname {hostname} is not resolving to the Application Gateway.");
+                }
 
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "GetAcmeOrderStep",
+                    Message = "Starting certificate request process with the Certificate Authority.",
+                    Error = null,
+                });
                 var order = await context.CallActivityAsync<OrderDetails>(nameof(GetAcmeOrderAsync), hostname);
 
                 var validationBlobs = new List<string>();
                 foreach (var authorization in order.Payload.Authorizations)
                 {
+                    context.SetCustomStatus(new CertbotStatus
+                    {
+                        Status = "GetAcmeHttp01ChallengeStep",
+                        Message = "Getting hostname ownership verification challenge from the Certificate Authority.",
+                        Error = null,
+                    });
                     var (challenge, validationDetails) = await context.CallActivityAsync<(Challenge, Http01ChallengeValidationDetails)>(nameof(GetAcmeHttp01ChallengeAsync), authorization);
                     validationBlobs.Add(validationDetails.HttpResourcePath);
 
+                    context.SetCustomStatus(new CertbotStatus
+                    {
+                        Status = "UploadValidationFileToBlobStorageStep",
+                        Message = "Uploading hostname ownership verification file to Azure Blob Storage.",
+                        Error = null,
+                    });
                     await context.CallActivityAsync(nameof(UploadValidationFileToBlobStorageAsync), validationDetails);
 
+                    context.SetCustomStatus(new CertbotStatus
+                    {
+                        Status = "AnswerAcmeHttp01ChallengeStep",
+                        Message = "Verifying hostname ownership.",
+                        Error = null,
+                    });
                     var response = await context.CallHttpAsync(HttpMethod.Get, new Uri(validationDetails.HttpResourceUrl));
 
-                    if (response.StatusCode != HttpStatusCode.OK) throw new InvalidOperationException($"ACME challenge http_01 validation file could not be found at {validationDetails.HttpResourceUrl}.");
-                    if (response.Content != validationDetails.HttpResourceValue) throw new InvalidOperationException($"ACME challenge http_01 validation file content is not valid at {validationDetails.HttpResourceUrl}.");
+                    if (response.StatusCode != HttpStatusCode.OK)
+                    {
+                        context.SetCustomStatus(new CertbotStatus
+                        {
+                            Status = "Failed",
+                            Message = $"ACME challenge http_01 validation file could not be found at {validationDetails.HttpResourceUrl}.",
+                            Error = "HostnameOwnershipValidationFileNotFound",
+                        });
+                        throw new InvalidOperationException($"ACME challenge http_01 validation file could not be found at {validationDetails.HttpResourceUrl}.");
+                    }
+                    if (response.Content != validationDetails.HttpResourceValue)
+                    {
+                        context.SetCustomStatus(new CertbotStatus
+                        {
+                            Status = "Failed",
+                            Message = $"ACME challenge http_01 validation file content is not valid at {validationDetails.HttpResourceUrl}.",
+                            Error = "HostnameOwnershipValidationFileNotValid",
+                        });
+                        throw new InvalidOperationException($"ACME challenge http_01 validation file content is not valid at {validationDetails.HttpResourceUrl}.");
+                    }
 
                     await context.CallActivityAsync(nameof(AnswerAcmeHttp01ChallengeAsync), challenge);
                 }
 
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "CheckAcmeOrderStep",
+                    Message = "Waiting for hostname ownership verification.",
+                    Error = null,
+                });
                 var retryOptions = new RetryOptions(firstRetryInterval: TimeSpan.FromSeconds(5), maxNumberOfAttempts: 12) { Handle = RetryStrategy.RetriableException };
                 await context.CallActivityWithRetryAsync(nameof(CheckAcmeOrderAsync), retryOptions, order);
 
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "CreateCertificateStep",
+                    Message = "Creating certificate.",
+                    Error = null,
+                });
                 var certificateSecretId = await context.CallActivityAsync<string>(nameof(CreateCertificateAsync), (hostname, order));
 
                 // Parallel execution
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "DeleteValidationFileFromBlobStorageStep",
+                    Message = "Deleting verification files from Azure Blob Storage.",
+                    Error = null,
+                });
                 var tasks = new List<Task>();
                 foreach (var validationBlob in validationBlobs)
                 {
@@ -116,7 +196,20 @@ namespace Certbot
                 }
                 await Task.WhenAll(tasks);
 
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "ConfigureApplicationGatewayStep",
+                    Message = "Configuring Application Gateway to use the new certificate.",
+                    Error = null,
+                });
                 await context.CallActivityAsync(nameof(ConfigureApplicationGatewayAsync), (hostname, certificateSecretId));
+
+                context.SetCustomStatus(new CertbotStatus
+                {
+                    Status = "Completed",
+                    Message = "Certbot function successfully completed.",
+                    Error = null,
+                });
             }
         }
 
