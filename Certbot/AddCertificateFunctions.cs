@@ -403,7 +403,7 @@ namespace Certbot
                     },
                     tags: new Dictionary<string, string>
                     {
-                        { "Issuer", new Uri(_configuration.AcmeEndpoint).Host }
+                        { "Hostname", hostname }
                     });
 
                 csr = request.Csr;
@@ -427,7 +427,15 @@ namespace Certbot
 
             x509Certificates.ImportFromPem(certificateData);
 
-            var cert = await _keyVaultClient.MergeCertificateAsync(_configuration.KeyVaultBaseUrl, certificateName, x509Certificates);
+            var cert = await _keyVaultClient.MergeCertificateAsync(
+                _configuration.KeyVaultBaseUrl,
+                certificateName,
+                x509Certificates,
+                tags: new Dictionary<string, string>
+                {
+                    { "Issuer", x509Certificates[0].Issuer },
+                    { "Hostname", hostname }
+                });
 
             return cert.SecretIdentifier.Identifier;
         }
