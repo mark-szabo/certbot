@@ -15,13 +15,13 @@ namespace Certbot
         [FunctionName("AddMultipleCertificatesFunctions")]
         public static async Task RunOrchestrator([OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            var hostnames = context.GetInput<string[]>();
+            var hostnames = context.GetInput<AddCertificateRequestRecord[]>();
 
             // Run multiple flows in parallel
             var tasks = new List<Task>();
             foreach (var hostname in hostnames)
             {
-                tasks.Add(context.CallSubOrchestratorAsync("AddCertificateFunctions", hostname));
+                tasks.Add(context.CallSubOrchestratorAsync("AddCertificateFunctions", hostname.Hostname));
             }
 
             await Task.WhenAll(tasks);

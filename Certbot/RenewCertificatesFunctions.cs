@@ -38,7 +38,9 @@ namespace Certbot
         [FunctionName("RenewCertificatesFunctions")]
         public async Task RunOrchestrator([OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            var hostnames = await context.CallActivityAsync<List<string>>(nameof(GetExpiringCertificatesFromApplicationGatewayAsync), null);
+            var hostnames = await context.CallActivityAsync<List<AddCertificateRequestRecord>>(nameof(GetExpiringCertificatesFromApplicationGatewayAsync), null);
+
+            if (hostnames.Count == 0) return;
 
             await context.CallSubOrchestratorAsync("AddMultipleCertificatesFunctions", hostnames);
         }
@@ -49,10 +51,10 @@ namespace Certbot
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(GetExpiringCertificatesFromApplicationGatewayAsync))]
-        public async Task<List<string>> GetExpiringCertificatesFromApplicationGatewayAsync([ActivityTrigger] object input, ILogger log)
+        public async Task<List<AddCertificateRequestRecord>> GetExpiringCertificatesFromApplicationGatewayAsync([ActivityTrigger] object input, ILogger log)
         {
             log.LogInformation("Getting expiring certificates from Application Gateway.");
-            var expiringCertificateHostnames = new List<string>();
+            var expiringCertificateHostnames = new List<AddCertificateRequestRecord>();
 
             var applicationGateway = await _azure.ApplicationGateways.GetByResourceGroupAsync(_configuration.ApplicationGatewayResourceGroup, _configuration.ApplicationGatewayName);
             var keyVaultSecretIds = applicationGateway.SslCertificates.Values.Select(cert => cert.KeyVaultSecretId);
@@ -64,7 +66,7 @@ namespace Certbot
 
                 if (secret.Attributes.Expires < DateTime.Today.AddDays(14) && hostname != null)
                 {
-                    expiringCertificateHostnames.Add(hostname);
+                    expiringCertificateHostnames.Add(new AddCertificateRequestRecord { Hostname = hostname });
                 }
             });
 

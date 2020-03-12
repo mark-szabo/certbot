@@ -71,7 +71,7 @@ namespace Certbot
             }
 
             // Function input comes from the request content.
-            string instanceId = await starter.StartNewAsync("AddCertificateFunctions", input: request.Hostnames[0]);
+            string instanceId = await starter.StartNewAsync("AddCertificateFunctions", input: request.Hostnames[0].Hostname);
 
             log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
 
