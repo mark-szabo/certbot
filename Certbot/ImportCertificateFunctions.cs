@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -8,7 +7,6 @@ using System.Text;
 using System.Threading.Tasks;
 using Azure.Security.KeyVault.Certificates;
 using Certbot.Models;
-using Microsoft.Azure.KeyVault;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
@@ -20,15 +18,13 @@ namespace Certbot
     public class ImportCertificateFunctions
     {
         private readonly CertbotConfiguration _configuration;
-        private readonly KeyVaultClient _keyVaultClient;
         private readonly CertificateClient _certificateClient;
 
         private static ReadOnlySpan<byte> X509Separator => new byte[] { 0x0A, 0x0A };
 
-        public ImportCertificateFunctions(CertbotConfiguration configuration, KeyVaultClient keyVaultClient, CertificateClient certificateClient)
+        public ImportCertificateFunctions(CertbotConfiguration configuration, CertificateClient certificateClient)
         {
             _configuration = configuration;
-            _keyVaultClient = keyVaultClient;
             _certificateClient = certificateClient;
         }
 
@@ -119,7 +115,7 @@ namespace Certbot
         /// <summary>
         /// Import certificate into KeyVault.
         /// </summary>
-        /// <param name="input"></param>
+        /// <param name="record"></param>
         /// <param name="log"></param>
         /// <returns></returns>
         [FunctionName(nameof(ImportCertificateAsync))]
@@ -128,11 +124,14 @@ namespace Certbot
             log.LogInformation($"Creating certificate for {record.Hostname}");
 
             var certificateName = record.Hostname.Replace("*", "wildcard").Replace(".", "-");
+            var certificate = record.Certificate
+                .Replace("-----BEGIN CERTIFICATE-----", "")
+                .Replace("-----END CERTIFICATE-----", "");
             var privateKey = record.PrivateKey
                 .Replace("-----BEGIN PRIVATE KEY-----", "")
                 .Replace("-----END PRIVATE KEY-----", "");
 
-            var certificateByteArray = Encoding.ASCII.GetBytes(record.Certificate);
+            var certificateByteArray = Encoding.ASCII.GetBytes(certificate);
             var x509Certificate = new X509Certificate2(certificateByteArray);
 
             using RSA rsa = RSA.Create();
@@ -148,17 +147,12 @@ namespace Certbot
             var x509CertificateWithPrivateKey = x509Certificate.CopyWithPrivateKey(rsa);
 
             // Import certificate with the new Certificate Client
-            var cert = await _certificateClient.ImportCertificateAsync(
-                new ImportCertificateOptions(certificateName, x509CertificateWithPrivateKey.Export(X509ContentType.Pfx))
-                {
-                    Password = record.Password
-                });
-
-            // Set tags on the imported certificate with the old client. More info: https://github.com/Azure/azure-sdk-for-net/issues/10580
-            await _keyVaultClient.UpdateCertificateAsync(cert.Value.Id.AbsoluteUri, tags: new Dictionary<string, string>
-                {
-                    { "Hostname", record.Hostname }
-                });
+            var options = new ImportCertificateOptions(certificateName, x509CertificateWithPrivateKey.Export(X509ContentType.Pfx))
+            {
+                Password = record.Password
+            };
+            options.Tags.Add("Hostname", record.Hostname);
+            var cert = await _certificateClient.ImportCertificateAsync(options);
 
             return cert.Value.SecretId.AbsoluteUri;
         }
