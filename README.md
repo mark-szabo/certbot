@@ -45,15 +45,124 @@
 - The Application Gateway must have a user assigned managed identity and the following permissions to the Key Vault: `secret/get`, `secret/set`, `certificate/get`, `certificate/create`, `certificate/update`
 - Assign the role `Contributor` **AND** `Managed Identity Operator` to the user assigned managed identity for the Function's managed service identity.
 
-## Sample request
+## Sample requests
 
 ```http
 POST /api/AddCertificateFunctions_HttpStart
 Content-Type: application/json
 
 {
-    "Hostnames": [
-        { "Hostname": "example.com" }
+    "hostnames": [
+        { "hostname": "example.com" }
     ]
 }
 ```
+
+```http
+POST /api/AddMultipleCertificatesFunctions_HttpStart
+Content-Type: application/json
+
+{
+    "hostnames": [
+        { "hostname": "example1.com" }
+        { "hostname": "example2.com" }
+    ]
+}
+```
+
+```http
+POST /api/AddCertificateWithPrivateKeyFunctions_HttpStart
+Content-Type: application/json
+
+{
+    "hostnames": [
+        {
+            "hostname": "example.com",
+            "privatekey": "MIIEvgIBADANBgkqhkiG9<REDACTED>93hzWePHJjijf/peknS",
+            "certificate": "MIIFVjCCBD6gAwIBAgIS<REDACTED>+utpV2U/yKdSSC7eDbjNE4="
+        }
+    ]
+}
+```
+
+## Sample response
+
+```http
+{
+    "id": "<instance_id>",
+    "statusQueryGetUri": "https://<function_name>.azurewebsites.net/runtime/webhooks/durabletask/instances/<instance_id>?taskHub=<hub_name>&connection=Storage&code=<code>&returnInternalServerErrorOnFailure=true",
+    "sendEventPostUri": "https://<function_name>.azurewebsites.net/runtime/webhooks/durabletask/instances/<instance_id>/raiseEvent/{eventName}?taskHub=<hub_name>&connection=Storage&code=<code>",
+    "terminatePostUri": "https://<function_name>.azurewebsites.net/runtime/webhooks/durabletask/instances/<instance_id>/terminate?reason={text}&taskHub=<hub_name>&connection=Storage&code=<code>",
+    "purgeHistoryDeleteUri": "https://<function_name>.azurewebsites.net/runtime/webhooks/durabletask/instances/<instance_id>?taskHub=<hub_name>&connection=Storage&code=<code>"
+}
+```
+
+## Status query sample responses
+
+```http
+{
+    "name": "AddCertificateFunctions",
+    "instanceId": "<instance_id>",
+    "runtimeStatus": "Running",
+    "input": "example.com",
+    "customStatus": {
+        "status": "CreateCertificateStep",
+        "message": "Creating certificate.",
+        "error": null
+    },
+    "output": null,
+    "createdTime": "2020-03-24T21:51:49Z",
+    "lastUpdatedTime": "2020-03-24T21:52:03Z"
+}
+```
+
+```http
+{
+    "name": "AddCertificateFunctions",
+    "instanceId": "<instance_id>",
+    "runtimeStatus": "Completed",
+    "input": "example.com",
+    "customStatus": {
+        "status": "Completed",
+        "message": "Certbot function successfully completed.",
+        "error": null
+    },
+    "output": null,
+    "createdTime": "2020-03-24T21:51:49Z",
+    "lastUpdatedTime": "2020-03-24T21:52:11Z"
+}
+```
+
+### Values of `runtimeStatus`
+
+- `Running` - The Function is running. Check the state in `customStatus`.
+- `Completed` - The Function has completed.
+- `Failed` - An internal error has occuered. Log the response body into the ticket manager (`output` contains more info about the exception).
+
+### Properties of `customStatus`
+
+- `status` - A custom status. [More info.](#values-of-status)
+- `message` - A human readable format of the status. You can display this on the frontend.
+- `error` - If `status` is `Failed` this field will contain the error code. [More info.](#values-of-error)
+
+### Values of `status`
+
+- `GetApplicationGatewayPublicIpStep` - Getting Application Gateway public IP address.
+- `CheckDnsResolutionStep` - Checking whether the hostname is resolving to the Application Gateway.
+- `GetAcmeOrderStep` - Starting certificate request process with the Certificate Authority.
+- `GetAcmeHttp01ChallengeStep` - Getting hostname ownership verification challenge from the Certificate Authority.
+- `UploadValidationFileToBlobStorageStep` - Uploading hostname ownership verification file to Azure Blob Storage.
+- `AnswerAcmeHttp01ChallengeStep` - Verifying hostname ownership.
+- `CheckAcmeOrderStep` - Waiting for hostname ownership verification.
+- `CreateCertificateStep` - Creating certificate.
+- `DeleteValidationFileFromBlobStorageStep` - Deleting verification files from Azure Blob Storage.
+- `ConfigureApplicationGatewayStep` - Configuring Application Gateway to use the new certificate.
+- `Completed` - Certbot function successfully completed.
+- `Failed` - An error has occured. Check `error`.
+- `ImportCertificateStep` - Importing certificate.
+
+### Values of `error`
+
+- `HostnameNotResolvingToApplicationGateway` - Hostname is not resolving to the Application Gateway.
+- `HostnameOwnershipValidationFileNotFound` - ACME challenge http_01 validation file could not be found.
+- `HostnameOwnershipValidationFileNotValid` - ACME challenge http_01 validation file content is not valid.
