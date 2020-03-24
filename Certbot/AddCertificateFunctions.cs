@@ -248,6 +248,10 @@ namespace Certbot
 
             log.LogInformation($"Checking hostname resolution for {hostname}");
 
+            var aResult = await _lookupClient.QueryAsync(hostname, QueryType.A);
+            var aRecords = aResult.Answers.OfType<ARecord>().ToList();
+            if (aRecords.Any(a => a.Address.ToString() == applicationGatewayIp)) return true;
+
             var cnameResult = await _lookupClient.QueryAsync(hostname, QueryType.CNAME);
             var cnames = cnameResult.Answers.OfType<CNameRecord>().ToList();
 
