@@ -12,6 +12,7 @@
     "ApplicationGatewayBackendName": "",
     "BlobContainerUrl": "",
     "KeyVaultBaseUrl": "",
+    "AZURE_TENANT_ID ": "",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet"
   }
 }

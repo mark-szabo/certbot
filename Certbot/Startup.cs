@@ -1,4 +1,4 @@
-﻿using Azure.Identity;
+using Azure.Identity;
 using Azure.Security.KeyVault.Certificates;
 using Azure.Security.KeyVault.Secrets;
 using Azure.Storage.Blobs;
@@ -38,7 +38,7 @@ namespace Certbot
             builder.Services.AddSingleton(config);
 
             AzureServiceTokenProvider tokenProvider = new AzureServiceTokenProvider();
-            var managedServiceIdentityCredential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { SharedTokenCacheUsername = "mark-ms@antavo.com" });
+            var managedServiceIdentityCredential = new DefaultAzureCredential();
 
             builder.Services.AddHttpClient();
 
