@@ -44,3 +44,16 @@
 - Assign the role `Reader` to the Public IP Address of the Application Gateway for the MSI.
 - The Application Gateway must have a user assigned managed identity and the following permissions to the Key Vault: `secret/get`, `secret/set`, `certificate/get`, `certificate/create`, `certificate/update`
 - Assign the role `Contributor` **AND** `Managed Identity Operator` to the user assigned managed identity for the Function's managed service identity.
+
+## Sample request
+
+```http
+POST /api/AddCertificateFunctions_HttpStart
+Content-Type: application/json
+
+{
+    "Hostnames": [
+        { "Hostname": "example.com" }
+    ]
+}
+```
