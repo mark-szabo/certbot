@@ -380,19 +380,6 @@ namespace Certbot
 
             byte[] csr;
 
-            /*var subject = "CN=" + hostname;
-            var subjectAlternativeNames = new SubjectAlternativeNames();
-            subjectAlternativeNames.DnsNames.Add(hostname);
-            var request = await _certificateClient.StartCreateCertificateAsync(
-                certificateName,
-                new CertificatePolicy("Unknown", subject, subjectAlternativeNames),
-                tags: new Dictionary<string, string>
-                {
-                    { "Issuer", new Uri(_configuration.AcmeEndpoint).Host }
-                });
-
-            csr = request.Properties.Csr;*/
-
             try
             {
                 var request = await _keyVaultClient.CreateCertificateAsync(

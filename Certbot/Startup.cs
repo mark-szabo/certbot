@@ -7,6 +7,7 @@ using Certbot.Models;
 using DnsClient;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Azure.KeyVault;
+using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
@@ -33,47 +34,69 @@ namespace Certbot
 
         public override void Configure(IFunctionsHostBuilder builder)
         {
+            // Add Configuration as a Singleton Service
             builder.Services.Configure<CertbotConfiguration>(Configuration);
             var config = Configuration.Get<CertbotConfiguration>();
             builder.Services.AddSingleton(config);
 
-            AzureServiceTokenProvider tokenProvider = new AzureServiceTokenProvider();
-            var managedServiceIdentityCredential = new DefaultAzureCredential();
-
+            // Add HttpClient
             builder.Services.AddHttpClient();
 
+            // Add the DNS LookupClient as a Singleton Service
             builder.Services.AddSingleton(new LookupClient { UseCache = false, EnableAuditTrail = true });
 
-            builder.Services.AddSingleton(provider =>
-                new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(tokenProvider.KeyVaultTokenCallback)));
+            // Add the ACME protocol client factory as a Scoped Service
+            builder.Services.AddScoped<IAcmeProtocolClientFactory, AcmeProtocolClientFactory>();
 
-            var secretClient = new SecretClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
-            builder.Services.AddSingleton(secretClient);
+            // Add the KeyVaultClient as a Scoped Service
+            builder.Services.AddScoped(_ =>
+            {
+                var tokenProvider = new AzureServiceTokenProvider();
+                return new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(tokenProvider.KeyVaultTokenCallback));
+            });
 
-            var certificateClient = new CertificateClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
-            builder.Services.AddSingleton(certificateClient);
+            // Add the KeyVault SecretClient as a Scoped Service
+            builder.Services.AddScoped(_ =>
+            {
+                var managedServiceIdentityCredential = new DefaultAzureCredential();
+                return new SecretClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
+            });
 
-            var azure = Microsoft.Azure.Management.Fluent.Azure
-                .Configure()
-                .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
-                .Authenticate(new AzureCredentials(
-                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://management.azure.com/", config.TenantId).Result),
-                    new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://graph.windows.net/", config.TenantId).Result),
-                    config.TenantId,
-                    AzureEnvironment.AzureGlobalCloud))
-                .WithSubscription(config.SubscriptionId);
+            // Add the KeyVault CertificateClient as a Scoped Service
+            builder.Services.AddScoped(_ =>
+            {
+                var managedServiceIdentityCredential = new DefaultAzureCredential();
+                return new CertificateClient(new Uri(config.KeyVaultBaseUrl), managedServiceIdentityCredential);
+            });
 
-            builder.Services.AddSingleton(azure);
+            // Add the Azure API client as a Scoped Service
+            builder.Services.AddScoped(_ =>
+            {
+                var tokenProvider = new AzureServiceTokenProvider();
+                return Microsoft.Azure.Management.Fluent.Azure
+                    .Configure()
+                    .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
+                    .Authenticate(new AzureCredentials(
+                        new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://management.azure.com/", config.TenantId).Result),
+                        new TokenCredentials(tokenProvider.GetAccessTokenAsync("https://graph.windows.net/", config.TenantId).Result),
+                        config.TenantId,
+                        AzureEnvironment.AzureGlobalCloud))
+                    .WithSubscription(config.SubscriptionId);
+            });
 
-            // Get a credential and create a client object for the blob container.
-            var blobContainerClient = new BlobContainerClient(new Uri(config.BlobContainerUrl), managedServiceIdentityCredential);
+            // Add the BlobContainerClient as a Scoped Service
+            builder.Services.AddScoped(_ =>
+            {
+                var managedServiceIdentityCredential = new DefaultAzureCredential();
 
-            // Create the container if it does not exist.
-            blobContainerClient.CreateIfNotExistsAsync(PublicAccessType.Blob).Wait();
+                // Get a credential and create a client object for the blob container.
+                var blobContainerClient = new BlobContainerClient(new Uri(config.BlobContainerUrl), managedServiceIdentityCredential);
 
-            builder.Services.AddSingleton(blobContainerClient);
+                // Create the container if it does not exist.
+                blobContainerClient.CreateIfNotExistsAsync(PublicAccessType.Blob).Wait();
 
-            builder.Services.AddSingleton<IAcmeProtocolClientFactory, AcmeProtocolClientFactory>();
+                return blobContainerClient;
+            });
         }
     }
 }
