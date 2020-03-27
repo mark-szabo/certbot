@@ -135,6 +135,7 @@ Content-Type: application/json
 
 ### Values of `runtimeStatus`
 
+- `Pending` - The Function is queued and will be started soon.
 - `Running` - The Function is running. Check the state in `customStatus`.
 - `Completed` - The Function has completed.
 - `Failed` - An internal error has occuered. Log the response body into the ticket manager (`output` contains more info about the exception).
